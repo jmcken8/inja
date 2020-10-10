@@ -1668,6 +1668,7 @@ struct ParserConfig {
 #define INCLUDE_INJA_FUNCTION_STORAGE_HPP_
 
 #include <vector>
+#include <ostream>
 
 // #include "bytecode.hpp"
 // Copyright (c) 2019 Pantor. All rights reserved.
@@ -1815,7 +1816,19 @@ namespace inja {
 using json = nlohmann::json;
 
 using Arguments = std::vector<const json*>;
-using CallbackFunction = std::function<json(Arguments& args)>;
+using ValueCallbackFunction = std::function<json(Arguments& args)>;
+using StreamingCallbackFunction = std::function<json(std::ostream& s, Arguments& args)>;
+struct CallbackContainer
+{
+    enum {VALUE, STREAMING} type;
+    union
+    {
+        ValueCallbackFunction value;
+        StreamingCallbackFunction streaming;
+    } callback;
+    CallbackContainer(const ValueCallbackFunction& function) : callback({.value=function}) {}
+    CallbackContainer(const StreamingCallbackFunction& function)  : callback({.streaming=function}) {}
+};
 
 /*!
  * \brief Class for builtin functions and user-defined callbacks.
@@ -1831,6 +1844,10 @@ class FunctionStorage {
     auto& data = get_or_new(name, num_args);
     data.function = function;
   }
+  void add_streaming(nonstd::string_view name, unsigned int num_args, const StreamingCallbackFunction& function) {
+    auto& data = get_or_new(name, num_args);
+    data.normal = function;
+  }
 
   Bytecode::Op find_builtin(nonstd::string_view name, unsigned int num_args) const {
     if (auto ptr = get(name, num_args)) {
@@ -1839,7 +1856,7 @@ class FunctionStorage {
     return Bytecode::Op::Nop;
   }
 
-  CallbackFunction find_callback(nonstd::string_view name, unsigned int num_args) const {
+  CallbackContainer find_callback(nonstd::string_view name, unsigned int num_args) const {
     if (auto ptr = get(name, num_args)) {
       return ptr->function;
     }
@@ -1850,7 +1867,7 @@ class FunctionStorage {
   struct FunctionData {
     unsigned int num_args {0};
     Bytecode::Op op {Bytecode::Op::Nop}; // for builtins
-    CallbackFunction function; // for callbacks
+    CallbackContainer function; // for callbacks
   };
 
   FunctionData& get_or_new(nonstd::string_view name, unsigned int num_args) {
@@ -3727,6 +3744,10 @@ class Environment {
   }
 
   void add_callback(const std::string& name, unsigned int numArgs, const CallbackFunction& callback) {
+    m_callbacks.add_callback(name, numArgs, callback);
+  }
+
+  void add_callback(const std::string& name, unsigned int numArgs, const StreamingCallbackFunction& callback) {
     m_callbacks.add_callback(name, numArgs, callback);
   }
 

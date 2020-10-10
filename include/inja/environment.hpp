@@ -146,7 +146,11 @@ class Environment {
     return j;
   }
 
-  void add_callback(const std::string& name, unsigned int numArgs, const CallbackFunction& callback) {
+  void add_callback(const std::string& name, unsigned int numArgs, const ValueCallbackFunction& callback) {
+    m_callbacks.add_callback(name, numArgs, callback);
+  }
+
+  void add_callback(const std::string& name, unsigned int numArgs, const StreamingCallbackFunction& callback) {
     m_callbacks.add_callback(name, numArgs, callback);
   }
 

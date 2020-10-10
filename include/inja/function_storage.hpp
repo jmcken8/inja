@@ -4,6 +4,8 @@
 #define INCLUDE_INJA_FUNCTION_STORAGE_HPP_
 
 #include <vector>
+#include <ostream>
+#include <utility>
 
 #include "bytecode.hpp"
 #include "string_view.hpp"
@@ -14,7 +16,71 @@ namespace inja {
 using json = nlohmann::json;
 
 using Arguments = std::vector<const json*>;
-using CallbackFunction = std::function<json(Arguments& args)>;
+using ValueCallbackFunction = std::function<json(Arguments& args)>;
+using StreamingCallbackFunction = std::function<void(std::ostream& s, Arguments& args)>;
+
+struct CallbackContainer {
+  enum class Type {VALUE, STREAMING, _};
+  union Callback {
+    Callback() {}
+    Callback(const ValueCallbackFunction& function) : value(function) {}
+    Callback(const StreamingCallbackFunction& function) : streaming(function) {}
+    ~Callback() {}
+    ValueCallbackFunction value;
+    StreamingCallbackFunction streaming;
+  };
+  CallbackContainer() : type(Type::_) {}
+  CallbackContainer(const ValueCallbackFunction& function) : type(Type::VALUE), callback(function) {}
+  CallbackContainer(const StreamingCallbackFunction& function) : type(Type::STREAMING), callback(function) {}
+  ~CallbackContainer() {
+    switch(type) {
+      case Type::VALUE:
+        callback.value.~ValueCallbackFunction(); return;
+      case Type::STREAMING:
+        callback.streaming.~StreamingCallbackFunction(); return;
+      case Type::_: return;
+    }
+  }
+  CallbackContainer(const CallbackContainer& other) : type(other.type) {
+    switch(other.type) {
+      case Type::VALUE:
+        new(&callback) Callback(other.callback.value); return;
+      case Type::STREAMING:
+        new(&callback) Callback(other.callback.streaming); return;
+      case Type::_: return;
+    }
+  }
+  CallbackContainer(CallbackContainer&& other) noexcept : type(other.type) {
+    switch(other.type)
+    {
+      case Type::VALUE:
+        new(&callback.value) ValueCallbackFunction(std::move(other.callback.value)); return;
+      case Type::STREAMING:
+        new(&callback.streaming) StreamingCallbackFunction(std::move(other.callback.streaming)); return;
+      case Type::_: return;
+    }
+  }
+  CallbackContainer& operator=(const CallbackContainer& other) {
+    return *this = CallbackContainer(other);
+  }
+  CallbackContainer& operator=(const CallbackContainer&& other) noexcept {
+    type = other.type;
+    switch(other.type) {
+      case Type::VALUE:
+        new(&callback.value) ValueCallbackFunction(std::move(other.callback.value)); return *this;
+      case Type::STREAMING:
+        new(&callback.streaming) StreamingCallbackFunction(std::move(other.callback.streaming)); return *this;
+      case Type::_: return *this;
+    }
+  }
+  operator bool()
+  {
+    return type != Type::_;
+  }
+
+  Type type;
+  Callback callback;
+};
 
 /*!
  * \brief Class for builtin functions and user-defined callbacks.
@@ -26,7 +92,8 @@ class FunctionStorage {
     data.op = op;
   }
 
-  void add_callback(nonstd::string_view name, unsigned int num_args, const CallbackFunction& function) {
+  template<typename T>
+  void add_callback(nonstd::string_view name, unsigned int num_args, const T& function) {
     auto& data = get_or_new(name, num_args);
     data.function = function;
   }
@@ -38,18 +105,19 @@ class FunctionStorage {
     return Bytecode::Op::Nop;
   }
 
-  CallbackFunction find_callback(nonstd::string_view name, unsigned int num_args) const {
+  CallbackContainer find_callback(nonstd::string_view name, unsigned int num_args) const {
     if (auto ptr = get(name, num_args)) {
       return ptr->function;
     }
-    return nullptr;
+    return {};
   }
 
  private:
   struct FunctionData {
     unsigned int num_args {0};
     Bytecode::Op op {Bytecode::Op::Nop}; // for builtins
-    CallbackFunction function; // for callbacks
+    CallbackContainer function; // for callbacks
+    FunctionData() : function() {}
   };
 
   FunctionData& get_or_new(nonstd::string_view name, unsigned int num_args) {

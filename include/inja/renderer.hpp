@@ -8,6 +8,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <sstream>
 
 #include <nlohmann/json.hpp>
 
@@ -16,6 +17,8 @@
 #include "template.hpp"
 #include "utils.hpp"
 
+/// TO REMOVE: need this or else ALE gets confused
+# include "function_storage.hpp"
 
 namespace inja {
 
@@ -46,7 +49,15 @@ class Renderer {
     }
 
     for (auto i = std::prev(m_stack.end(), pop_args); i != m_stack.end(); i++) {
-      m_tmp_args.push_back(&(*i));
+      switch(i->type) {
+        case StackElement::Type::JSON:
+          m_tmp_args.push_back(&(i->element.value)); break;
+        case StackElement::Type::STREAM_FUNCTION: {
+          std::ostringstream ss;
+          i->element.function(ss);
+          *i = StackElement(json(ss.str()));
+        }
+      }
     }
 
     // get immediate arg
@@ -90,7 +101,13 @@ class Renderer {
       // try to evaluate as a no-argument callback
       if (auto callback = m_callbacks.find_callback(bc.str, 0)) {
         std::vector<const json*> arguments {};
-        m_tmp_val = callback(arguments);
+        if(callback.type == CallbackContainer::Type::STREAMING) {
+          std::ostringstream ss;
+          callback.callback.streaming(ss, arguments);
+          m_tmp_val = ss.str();
+        } else {
+          m_tmp_val = callback.callback.value(arguments);
+        }
         return &m_tmp_val;
       }
       throw RenderError("variable '" + static_cast<std::string>(bc.str) + "' not found");
@@ -133,7 +150,101 @@ class Renderer {
   const TemplateStorage& m_included_templates;
   const FunctionStorage& m_callbacks;
 
-  std::vector<json> m_stack;
+  struct CurriedFunction {
+    StreamingCallbackFunction function;
+    std::vector<json> args;
+    CurriedFunction(const StreamingCallbackFunction &function)
+      : function(function) {}
+    CurriedFunction(const StreamingCallbackFunction &function, std::vector<json> args)
+      : function(function), args(args) {}
+    void operator()(std::ostream& s)
+    {
+      std::vector<const json*> argPointers(args.size());
+      for(size_t i = 0; i < args.size(); i++)
+        argPointers[i] = &args[i];
+      function(s, argPointers);
+    }
+  };
+
+  struct StackElement {
+    enum class Type { JSON, STREAM_FUNCTION };
+    union Element {
+      Element(const json& value) : value(value) {}
+      Element(const CurriedFunction& function) : function(function) {}
+      Element(const StackElement&& other)
+      {
+        switch(other.type)
+        {
+          case Type::JSON:
+            value = std::move(other.element.value); return;
+          case Type::STREAM_FUNCTION:
+            function = std::move(other.element.function); return;
+        }
+      }
+      Element(const StackElement& other) {
+        switch(other.type) {
+          case Type::JSON:
+            new(this) Element(other.element.value); return;
+          case Type::STREAM_FUNCTION:
+            new(this) Element(other.element.function); return;
+        }
+      }
+      ~Element() {}
+      json value;
+      CurriedFunction function;
+    };
+    StackElement(const nlohmann::json& value)
+      : type(Type::JSON), element(value) {}
+    StackElement(const CurriedFunction& function)
+      : type(Type::STREAM_FUNCTION), element(function) {}
+    ~StackElement() {
+      switch(type) {
+        case Type::JSON:
+          element.value.~json(); return;
+        case Type::STREAM_FUNCTION:
+          element.function.~CurriedFunction(); return;
+      }
+    }
+    StackElement(const StackElement& other)
+      : type(other.type), element(other) {}
+    StackElement(StackElement&& other) noexcept
+      : type(other.type), element(other) {}
+    StackElement& operator=(const StackElement& other) {
+      return *this = StackElement(other);
+    }
+    StackElement& operator=(const StackElement&& other) noexcept {
+      switch(other.type) {
+        case Type::JSON:
+          element.value = std::move(other.element.value); return *this;
+        case Type::STREAM_FUNCTION:
+          element.function = std::move(other.element.function); return *this;
+      }
+    }
+    bool empty() {
+      switch(type) {
+        case Type::JSON:
+          return element.value.empty();
+        case Type::STREAM_FUNCTION:
+          return false;
+      }
+    }
+    operator json()
+    {
+      switch(type) {
+        case Type::JSON:
+          return element.value;
+        case Type::STREAM_FUNCTION: {
+          std::ostringstream ss;
+          element.function(ss);
+          return ss.str();
+        }
+      }
+    }
+    Type type;
+    Element element;
+  };
+
+  std::vector<StackElement> m_stack;
 
 
   struct LoopLevel {
@@ -465,9 +576,24 @@ class Renderer {
           if (!callback) {
             throw RenderError("function '" + static_cast<std::string>(bc.str) + "' (" + std::to_string(static_cast<unsigned int>(bc.args)) + ") not found");
           }
-          json result = callback(get_args(bc));
-          pop_args(bc);
-          m_stack.emplace_back(std::move(result));
+          switch(callback.type) {
+            case CallbackContainer::Type::VALUE: {
+              auto result = callback.callback.value(get_args(bc));
+              pop_args(bc);
+              m_stack.emplace_back(std::move(result));
+              break;
+            }
+            case CallbackContainer::Type::STREAMING: {
+              auto arg_pointers = get_args(bc);
+              std::vector<json> args;
+              for(auto& i : arg_pointers)
+                args.push_back(std::move(*i));
+              pop_args(bc);
+              m_stack.emplace_back(CurriedFunction(callback.callback.streaming, args));
+              break;
+            }
+            case CallbackContainer::Type::_: break;
+          }
           break;
         }
         case Bytecode::Op::Jump: {
