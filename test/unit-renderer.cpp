@@ -383,22 +383,32 @@ TEST_CASE("streaming_callbacks") {
     CHECK(env.render("{{ multiply(3, 4, 5) }}", data) == "60");
     CHECK(env.render("{{ multiply }}", data) == "1");
 
-    // test override
-    env.add_callback("double", 1, [](std::ostream& s, inja::Arguments& args) {
-        int number = args.at(0)->get<int>();
-        s << 2 * number + 10;
-    });
+    SUBCASE("override existing") {
+      env.add_callback("double", 1, [](std::ostream& s, inja::Arguments& args) {
+          int number = args.at(0)->get<int>();
+          s << 2 * number + 10;
+      });
 
-    CHECK(env.render("{{ double(age) }}", data) == "66");
+      CHECK(env.render("{{ double(age) }}", data) == "66");
+    }
 
-    env.add_callback("nested", 1, [&env](std::ostream& s, inja::Arguments& args) {
-        int number = args.at(0)->get<int>();
-        s << number;
-        if(number > 0)
-            env.render_to(s, env.parse("{{ nested(depth) }}"), {{"depth", number - 1}});
-    });
-    CHECK(env.render("{{ nested(10) }}", {}) == "109876543210");
+    SUBCASE("recurse") {
+      env.add_callback("nested", 1, [&env](std::ostream& s, inja::Arguments& args) {
+          int number = args.at(0)->get<int>();
+          s << number;
+          if(number > 0)
+              env.render_to(s, env.parse("{{ nested(depth) }}"), {{"depth", number - 1}});
+      });
+      CHECK(env.render("{{ nested(10) }}", {}) == "109876543210");
+    }
 
+    SUBCASE("override streaming with not") {
+      env.add_callback("double", 1, [](inja::Arguments& args) {
+          int number = args.at(0)->get<int>();
+          return 4 * number;
+      });
+      CHECK(env.render("{{ double(age) }}", data) == "112");
+    };
 
 }
 
