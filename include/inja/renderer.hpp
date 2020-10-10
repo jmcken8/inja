@@ -39,6 +39,7 @@ inline nonstd::string_view convert_dot_to_json_pointer(nonstd::string_view dot, 
 class Renderer {
   std::vector<const json*>& get_args(const Bytecode& bc) {
     m_tmp_args.clear();
+    m_tmp_arg_vals.clear();
 
     bool has_imm = ((bc.flags & Bytecode::Flag::ValueMask) != Bytecode::Flag::ValuePop);
 
@@ -50,12 +51,16 @@ class Renderer {
 
     for (auto i = std::prev(m_stack.end(), pop_args); i != m_stack.end(); i++) {
       switch(i->type) {
-        case StackElement::Type::JSON:
-          m_tmp_args.push_back(&(i->element.value)); break;
+        case StackElement::Type::JSON: {
+          m_tmp_args.push_back(&(i->element.value));
+          break;
+        }
         case StackElement::Type::STREAM_FUNCTION: {
           std::ostringstream ss;
           i->element.function(ss);
-          *i = StackElement(json(ss.str()));
+          m_tmp_arg_vals.push_back(json(ss.str()));
+          m_tmp_args.push_back(&(m_tmp_arg_vals.back()));
+          break;
         }
       }
     }
@@ -176,9 +181,9 @@ class Renderer {
         switch(other.type)
         {
           case Type::JSON:
-            value = std::move(other.element.value); return;
+            new(this) Element(std::move(other.element.value)); return;
           case Type::STREAM_FUNCTION:
-            function = std::move(other.element.function); return;
+            new(this) Element(std::move(other.element.function)); return;
         }
       }
       Element(const StackElement& other) {
@@ -213,6 +218,7 @@ class Renderer {
       return *this = StackElement(other);
     }
     StackElement& operator=(const StackElement&& other) noexcept {
+      type = other.type;
       switch(other.type) {
         case Type::JSON:
           element.value = std::move(other.element.value); return *this;
@@ -272,6 +278,7 @@ class Renderer {
   const json* m_data;
 
   std::vector<const json*> m_tmp_args;
+  std::vector<json> m_tmp_arg_vals;
   json m_tmp_val;
 
 

@@ -338,6 +338,70 @@ TEST_CASE("callbacks") {
     CHECK(env.render("{{ multiply }}", data) == "1.0");
 }
 
+TEST_CASE("streaming_callbacks") {
+    inja::Environment env;
+    json data;
+    data["age"] = 28;
+
+    env.add_callback("double", 1, [](std::ostream& s, inja::Arguments& args) {
+        int number = args.at(0)->get<int>();
+        s << 2 * number;
+    });
+
+    env.add_callback("half", 1, [](std::ostream& s, inja::Arguments args) {
+        int number = args.at(0)->get<int>();
+        s << number / 2;
+    });
+
+    std::string greet = "Hello";
+    env.add_callback("double-greetings", 0, [greet](std::ostream& s, inja::Arguments args) {
+        s << greet + " " + greet + "!";
+    });
+
+    env.add_callback("multiply", 2, [](std::ostream& s, inja::Arguments args) {
+        double number1 = args.at(0)->get<double>();
+        auto number2 = args.at(1)->get<double>();
+        s << number1 * number2;
+    });
+
+    env.add_callback("multiply", 3, [](std::ostream& s, inja::Arguments args) {
+        double number1 = args.at(0)->get<double>();
+        double number2 = args.at(1)->get<double>();
+        double number3 = args.at(2)->get<double>();
+        s << number1 * number2 * number3;
+    });
+
+    env.add_callback("multiply", 0, [](std::ostream& s, inja::Arguments args) {
+        s << 1.0;
+    });
+    CHECK(env.render("{{ double(age) }}", data) == "56");
+    CHECK(env.render("{{ double(age) }}", data) == "56"); // check works twice
+    CHECK(env.render("{{ half(age) }}", data) == "14");
+    CHECK(env.render("{{ double-greetings }}", data) == "Hello Hello!");
+    CHECK(env.render("{{ double-greetings() }}", data) == "Hello Hello!");
+    CHECK(env.render("{{ multiply(4, 5) }}", data) == "20");
+    CHECK(env.render("{{ multiply(3, 4, 5) }}", data) == "60");
+    CHECK(env.render("{{ multiply }}", data) == "1");
+
+    // test override
+    env.add_callback("double", 1, [](std::ostream& s, inja::Arguments& args) {
+        int number = args.at(0)->get<int>();
+        s << 2 * number + 10;
+    });
+
+    CHECK(env.render("{{ double(age) }}", data) == "66");
+
+    env.add_callback("nested", 1, [&env](std::ostream& s, inja::Arguments& args) {
+        int number = args.at(0)->get<int>();
+        s << number;
+        if(number > 0)
+            env.render_to(s, env.parse("{{ nested(depth) }}"), {{"depth", number - 1}});
+    });
+    CHECK(env.render("{{ nested(10) }}", {}) == "109876543210");
+
+
+}
+
 
 TEST_CASE("combinations") {
     inja::Environment env;
